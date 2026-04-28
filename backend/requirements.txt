@@ -13,4 +13,3 @@ nltk
 beautifulsoup4
 playwright
 fake-useragent
-tensorflow
