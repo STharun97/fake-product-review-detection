@@ -740,10 +740,18 @@ async def get_predictions(limit: int = 100, skip: int = 0):
             end_index = skip + limit
             return sorted(local_storage, key=lambda x: x['created_at'], reverse=True)[start_index:end_index]
 
-        predictions = await db.predictions.find(
-            {}, 
-            {"_id": 0}
-        ).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+        try:
+            predictions = await asyncio.wait_for(
+                db.predictions.find(
+                    {}, 
+                    {"_id": 0}
+                ).sort("created_at", -1).skip(skip).limit(limit).to_list(limit),
+                timeout=5.0
+            )
+        except asyncio.TimeoutError:
+            logger.error("Database query timed out for predictions")
+            if skip == 0: return sorted(local_storage, key=lambda x: x['created_at'], reverse=True)[:limit]
+            return []
         
         for pred in predictions:
             # Ensure created_at is a datetime object
@@ -845,6 +853,27 @@ async def get_model_metrics():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+async def get_dashboard_stats_fallback():
+    """Fallback for dashboard stats when DB is slow or empty"""
+    total_reviews = len(local_storage)
+    fake_count = sum(1 for p in local_storage if p.get('is_fake', False))
+    genuine_count = total_reviews - fake_count
+    fake_percentage = (fake_count / total_reviews * 100) if total_reviews > 0 else 0
+    genuine_percentage = (genuine_count / total_reviews * 100) if total_reviews > 0 else 0
+    avg_confidence = sum(p.get('confidence', 0) for p in local_storage) / total_reviews if total_reviews > 0 else 0
+    recent = sorted(local_storage, key=lambda x: x['created_at'], reverse=True)[:5]
+    
+    return DashboardStats(
+        total_reviews=total_reviews,
+        fake_count=fake_count,
+        genuine_count=genuine_count,
+        fake_percentage=round(fake_percentage, 2),
+        genuine_percentage=round(genuine_percentage, 2),
+        average_confidence=round(avg_confidence, 2),
+        recent_predictions=recent
+    )
+
+
 @api_router.get("/dashboard/stats", response_model=DashboardStats)
 async def get_dashboard_stats():
     """Get dashboard statistics"""
@@ -874,23 +903,33 @@ async def get_dashboard_stats():
                 recent_predictions=recent
             )
 
-        total_reviews = await db.predictions.count_documents({})
-        fake_count = await db.predictions.count_documents({"is_fake": True})
-        genuine_count = await db.predictions.count_documents({"is_fake": False})
+        try:
+            total_reviews = await asyncio.wait_for(db.predictions.count_documents({}), timeout=3.0)
+            fake_count = await asyncio.wait_for(db.predictions.count_documents({"is_fake": True}), timeout=3.0)
+            genuine_count = total_reviews - fake_count
+            
+            pipeline = [
+                {"$group": {"_id": None, "avg_confidence": {"$avg": "$confidence"}}}
+            ]
+            avg_result = await asyncio.wait_for(db.predictions.aggregate(pipeline).to_list(1), timeout=3.0)
+            avg_confidence = avg_result[0]["avg_confidence"] if avg_result else 0
+            
+            fake_percentage = (fake_count / total_reviews * 100) if total_reviews > 0 else 0
+            genuine_percentage = (genuine_count / total_reviews * 100) if total_reviews > 0 else 0
+        except asyncio.TimeoutError:
+            logger.warning("Dashboard DB queries timed out, using fallback")
+            return await get_dashboard_stats_fallback()
         
-        fake_percentage = (fake_count / total_reviews * 100) if total_reviews > 0 else 0
-        genuine_percentage = (genuine_count / total_reviews * 100) if total_reviews > 0 else 0
-        
-        pipeline = [
-            {"$group": {"_id": None, "avg_confidence": {"$avg": "$confidence"}}}
-        ]
-        avg_result = await db.predictions.aggregate(pipeline).to_list(1)
-        avg_confidence = avg_result[0]["avg_confidence"] if avg_result else 0
-        
-        recent = await db.predictions.find(
-            {},
-            {"_id": 0, "id": 1, "prediction": 1, "confidence": 1, "created_at": 1, "model_used": 1}
-        ).sort("created_at", -1).limit(5).to_list(5)
+        try:
+            recent = await asyncio.wait_for(
+                db.predictions.find(
+                    {},
+                    {"_id": 0, "id": 1, "prediction": 1, "confidence": 1, "created_at": 1, "model_used": 1}
+                ).sort("created_at", -1).limit(5).to_list(5),
+                timeout=3.0
+            )
+        except asyncio.TimeoutError:
+            recent = []
         
         for pred in recent:
             if isinstance(pred.get('created_at'), str):
