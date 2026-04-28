@@ -130,16 +130,21 @@ async def _create_browser_context(playwright):
     are preserved between scraping sessions. The user only needs
     to sign in once.
     """
+    # Use headless=True for production (Render)
+    is_production = os.environ.get('RENDER', 'false').lower() == 'true'
+    
     context = await playwright.chromium.launch_persistent_context(
         BROWSER_DATA_DIR,
-        headless=False,
-        slow_mo=150,
+        headless=True if is_production else False,
+        slow_mo=150 if not is_production else 0,
         args=[
-            "--start-maximized",
             "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
         ],
         user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        no_viewport=True,
+        viewport={'width': 1280, 'height': 800},
         locale='en-IN',
         timezone_id='Asia/Kolkata',
     )
