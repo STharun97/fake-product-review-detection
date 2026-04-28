@@ -746,15 +746,22 @@ async def get_predictions(limit: int = 100, skip: int = 0):
         ).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
         
         for pred in predictions:
+            # Ensure created_at is a datetime object
             if isinstance(pred.get('created_at'), str):
-                pred['created_at'] = datetime.fromisoformat(pred['created_at'].replace('Z', '+00:00'))
+                try:
+                    pred['created_at'] = datetime.fromisoformat(pred['created_at'].replace('Z', '+00:00'))
+                except Exception:
+                    pred['created_at'] = datetime.now(timezone.utc)
+            elif not isinstance(pred.get('created_at'), datetime):
+                pred['created_at'] = datetime.now(timezone.utc)
+                
             if 'indicators' not in pred:
                 pred['indicators'] = []
         
         return predictions
     except Exception as e:
-        logger.error(f"Error fetching predictions: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error fetching predictions: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
 @api_router.get("/predictions/{prediction_id}", response_model=PredictionResult)
@@ -887,9 +894,11 @@ async def get_dashboard_stats():
         
         for pred in recent:
             if isinstance(pred.get('created_at'), str):
-                pred['created_at'] = pred['created_at']
+                pass # Already a string
             elif hasattr(pred.get('created_at'), 'isoformat'):
                 pred['created_at'] = pred['created_at'].isoformat()
+            else:
+                pred['created_at'] = datetime.now(timezone.utc).isoformat()
         
         return DashboardStats(
             total_reviews=total_reviews,
@@ -901,8 +910,8 @@ async def get_dashboard_stats():
             recent_predictions=recent
         )
     except Exception as e:
-        logger.error(f"Error fetching dashboard stats: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error fetching dashboard stats: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Dashboard error: {str(e)}")
 
 
 @api_router.post("/retrain")
@@ -976,6 +985,31 @@ async def get_dataset_stats():
     except Exception as e:
         logger.error(f"Error getting dataset stats: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for monitoring"""
+    health = {
+        "status": "healthy",
+        "database": "connected" if ENABLE_DB and db is not None else "disabled/error",
+        "models_loaded": predictor.is_loaded,
+        "best_model": predictor.trainer.best_model_name if predictor.is_loaded else None,
+        "lstm_available": is_lstm_available(),
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    return health
+
+
+@app.get("/")
+async def root():
+    return {
+        "message": "Fake Review Detection API is running",
+        "version": "2.0.0",
+        "health": "/health",
+        "docs": "/docs"
+    }
 
 
 # Include the router
