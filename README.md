@@ -1,4 +1,4 @@
-# Fake Product Review Detection System
+# Detection and Classification of Deceptive Product Reviews using NLP Techniques
 
 An ML-powered application to detect fake product reviews.
 
